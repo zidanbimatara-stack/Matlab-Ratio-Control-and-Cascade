@@ -1,0 +1,100 @@
+%% ========================================================================
+%  TUGAS PENGENDALIAN PROSES - SEMESTER GENAP 2025/2026
+%  SISTEM 1 : KONTROL RASIO (RATIO CONTROL)
+%  Studi kasus : pengendalian rasio udara-bahan bakar pada burner pembakaran
+%
+%  Memerlukan: MATLAB + Control System Toolbox
+%  Cara pakai : jalankan seluruh file (Run). Semua gambar dan metrik dicetak.
+% =========================================================================
+clear; clc; close all;
+
+%% 1. PARAMETER PROSES DAN SETTING DESAIN -------------------------------
+% Loop aliran udara (valve + blower + duct + transmitter) dimodelkan sebagai
+% First Order Plus Dead Time (FOPDT):  Gp(s) = Kp*exp(-theta*s)/(taup*s+1)
+Kp    = 1.0;      % gain proses (laju udara ternormalisasi per sinyal kendali)
+taup  = 2.0;      % konstanta waktu proses udara [s]
+theta = 0.5;      % dead time / waktu transport [s]
+R     = 16.0;     % rasio udara:bahan bakar yang diinginkan (basis massa)
+
+% Proses dengan dead time menggunakan properti InputDelay
+Gp = tf(Kp,[taup 1],'InputDelay',theta);
+
+%% 2. PERANCANGAN PENGENDALI PI (METODE SIMC / Skogestad) ----------------
+% Untuk FOPDT, SIMC dengan tauc = theta memberi kendali ketat namun robust.
+tauc = theta;                          % konstanta waktu loop tertutup target
+Kc   = (1/Kp)*taup/(tauc+theta);       % = 2.0
+tauI = min(taup, 4*(tauc+theta));      % = 2.0  (kebetulan = taup)
+
+% Pengendali PI:  Gc(s) = Kc*(1 + 1/(tauI*s))
+Gc = tf([Kc*tauI Kc],[tauI 0]);        % alternatif: Gc = pid(Kc, Kc/tauI);
+
+fprintf('=== KONTROL RASIO ===\n');
+fprintf('Rasio target R           : %.1f\n', R);
+fprintf('PI: Kc = %.3f , tauI = %.3f s\n', Kc, tauI);
+
+% Catatan: karena tauI = taup, zero PI membatalkan pole proses sehingga
+% loop terbuka efektif menjadi integrator murni + dead time: Leff = exp(-theta*s)/s
+L = Gc*Gp;                              % loop terbuka penuh
+T = feedback(L,1);                      % fungsi alih loop tertutup (setpoint)
+
+%% 3. SIMULASI PELACAKAN: PERUBAHAN BEBAN BAHAN BAKAR --------------------
+dt = 0.01; t = (0:dt:90)';
+Ffuel = ones(size(t));                  % laju bahan bakar (wild stream)
+Ffuel(t>=20) = 1.3;                     % naik beban
+Ffuel(t>=50) = 0.9;                     % turun beban
+SPair = R*Ffuel;                        % keluaran ratio station = R x F_fuel
+
+Fair  = lsim(T, SPair, t);              % laju udara aktual (loop tertutup)
+ratio = Fair./Ffuel;                    % rasio aktual yang tercapai
+
+figure('Name','Kontrol Rasio - Pelacakan','Color','w','Position',[80 80 760 560]);
+subplot(2,1,1);
+yyaxis left
+plot(t,SPair,'--','LineWidth',1.8); hold on; plot(t,Fair,'-','LineWidth',1.8);
+ylabel('Laju udara (kg/s)'); ylim([0 24]);
+yyaxis right
+plot(t,Ffuel,'LineWidth',1.8); ylabel('Laju bahan bakar (kg/s)'); ylim([0 2]);
+title('Respons kontrol rasio terhadap perubahan beban'); grid on;
+legend('SP udara (R\cdotF_{fuel})','F_{air} aktual','F_{fuel} (wild)','Location','best');
+subplot(2,1,2);
+plot(t,ratio,'LineWidth',1.8); hold on; yline(R,':k','LineWidth',1.4);
+ylim([11 24]); xlabel('Waktu (s)'); ylabel('Rasio udara/bahan bakar');
+legend('Rasio aktual','Rasio target','Location','best'); grid on;
+
+%% 4. ANALISIS PERFORMANSI (respons step loop aliran udara) -------------
+info = stepinfo(T);
+fprintf('\n-- Performansi loop aliran udara (step satuan) --\n');
+fprintf('Rise time   : %.3f s\n', info.RiseTime);
+fprintf('Settling t. : %.3f s\n', info.SettlingTime);
+fprintf('Overshoot   : %.2f %%\n', info.Overshoot);
+fprintf('Peak time   : %.3f s\n', info.PeakTime);
+
+figure('Name','Kontrol Rasio - Step','Color','w');
+step(T,20); grid on; title('Respons step loop aliran udara (closed-loop)');
+xlabel('Waktu (s)'); ylabel('Laju udara ternormalisasi');
+
+%% 5. ANALISIS KESTABILAN ----------------------------------------------
+% margin() menghitung GM/PM dengan memperhitungkan dead time secara langsung.
+[Gm,Pm,Wcg,Wcp] = margin(L);
+fprintf('\n-- Kestabilan loop terbuka L(s) --\n');
+fprintf('Gain Margin : %.2f dB (= %.3f) pada %.3f rad/s\n', 20*log10(Gm), Gm, Wcg);
+fprintf('Phase Margin: %.2f deg pada %.3f rad/s\n', Pm, Wcp);
+
+figure('Name','Kontrol Rasio - Bode','Color','w');
+margin(L); grid on;
+title('Diagram Bode dan margin kestabilan - loop kontrol rasio');
+
+% Root locus dari loop efektif e^{-theta s}/s (pendekatan Pade orde 5)
+Leff = pade(tf(1,[1 0],'InputDelay',theta),5);
+figure('Name','Kontrol Rasio - Root Locus','Color','w');
+rlocus(Leff); grid on; axis([-8 1 -12 12]);
+title('Root locus loop efektif  e^{-0.5s}/s');
+
+% Pole dominan loop tertutup pada titik desain
+pcl = pole(feedback(Leff,1));
+[~,idx] = sort(abs(real(pcl))); dom = pcl(idx(1:2));
+zeta_d = abs(real(dom(1)))/abs(dom(1)); wn_d = abs(dom(1));
+fprintf('Pole dominan: %.3f +/- %.3fj  (zeta=%.3f, wn=%.3f rad/s)\n', ...
+        real(dom(1)), abs(imag(dom(1))), zeta_d, wn_d);
+
+fprintf('\nSelesai. Periksa keempat figure yang dihasilkan.\n');

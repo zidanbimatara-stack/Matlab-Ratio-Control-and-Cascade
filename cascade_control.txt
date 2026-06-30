@@ -1,0 +1,110 @@
+%% ========================================================================
+%  TUGAS PENGENDALIAN PROSES - SEMESTER GENAP 2025/2026
+%  SISTEM 2 : KONTROL BERTINGKAT (CASCADE CONTROL)
+%  Studi kasus : pengendalian suhu reaktor berjaket dengan loop sekunder
+%                pada suhu/aliran pendingin jaket.
+%
+%  Memerlukan: MATLAB + Control System Toolbox
+%  Cara pakai : jalankan seluruh file (Run).
+% =========================================================================
+clear; clc; close all;
+
+%% 1. MODEL PROSES ------------------------------------------------------
+% Proses primer (lambat): perpindahan panas ke isi reaktor
+K1 = 1.0; tau1 = 5.0;  G1 = tf(K1,[tau1 1]);
+% Proses sekunder (cepat): valve + dinamika jaket
+K2 = 1.0; tau2 = 1.0;  G2 = tf(K2,[tau2 1]);
+
+%% 2. PERANCANGAN PENGENDALI (DESAIN DARI DALAM KE LUAR) ----------------
+% --- Loop sekunder (inner) : SIMC, tauc2 = 0.2 (jauh lebih cepat) ---
+tauc2 = 0.2;
+Kc2  = (1/K2)*tau2/tauc2;            % 5.0
+tauI2= min(tau2, 4*tauc2);          % 0.8
+Gc2  = tf([Kc2*tauI2 Kc2],[tauI2 0]);
+
+% --- Loop primer (outer) : didesain memakai MODEL loop tertutup inner ---
+% Inner tertutup ~ 1/(tauc2*s+1); seri dengan G1 -> aturan setengah (half-rule)
+tauc1 = 1.0;
+tau_eff   = tau1 + tauc2/2;          % 5.1
+theta_eff = tauc2/2;                 % 0.1
+Kc1  = (1/(K1*K2))*tau_eff/(tauc1+theta_eff);   % ~4.636
+tauI1= min(tau_eff, 4*(tauc1+theta_eff));       % 4.4
+Gc1  = tf([Kc1*tauI1 Kc1],[tauI1 0]);
+
+fprintf('=== KONTROL CASCADE ===\n');
+fprintf('Inner PI: Kc2 = %.3f , tauI2 = %.3f s\n', Kc2, tauI2);
+fprintf('Outer PI: Kc1 = %.3f , tauI1 = %.3f s\n', Kc1, tauI1);
+
+% --- Pembanding: SATU loop tunggal pada proses keseluruhan G1*G2 ---
+% Half-rule, tauc disamakan dengan kecepatan loop outer (tauc=1.0) -> adil.
+tauc_s = 1.0; tau_s = tau1 + tau2/2; theta_s = tau2/2;
+Kc_s  = (1/(K1*K2))*tau_s/(tauc_s+theta_s);     % ~3.667
+tauI_s= min(tau_s, 4*(tauc_s+theta_s));         % 5.5
+Gcs   = tf([Kc_s*tauI_s Kc_s],[tauI_s 0]);
+fprintf('Single  PI: Kc = %.3f , tauI = %.3f s\n', Kc_s, tauI_s);
+
+%% 3. FUNGSI ALIH LOOP TERTUTUP ----------------------------------------
+T2 = feedback(G2*Gc2,1);             % komplementer sensitivitas inner (y2/r2)
+S2 = feedback(1,G2*Gc2);             % sensitivitas inner (y2/d2)
+Lout = G1*T2*Gc1;                    % loop terbuka outer
+Tset_c  = feedback(Lout,1);                       % cascade: y1/r1
+Tdist_c = minreal(G1*S2*feedback(1,Lout));        % cascade: y1/d2 (gangguan sekunder)
+
+Ls = G1*G2*Gcs;                      % loop tunggal
+Tset_s  = feedback(Ls,1);                         % single : y1/r1
+Tdist_s = minreal(G1*feedback(1,Ls));             % single : y1/d2
+
+%% 4. RESPONS LOOP SEKUNDER (cepat) ------------------------------------
+figure('Name','Cascade - Inner step','Color','w');
+step(T2,6); grid on; title('Respons step loop sekunder (inner) - cepat');
+xlabel('Waktu (s)'); ylabel('Variabel sekunder y_2');
+ii = stepinfo(T2);
+fprintf('\n-- Loop sekunder --  rise=%.3fs  settling=%.3fs  overshoot=%.2f%%\n', ...
+        ii.RiseTime, ii.SettlingTime, ii.Overshoot);
+
+%% 5. PELACAKAN SETPOINT : CASCADE vs SINGLE ---------------------------
+t = (0:0.01:40)';
+yc = step(Tset_c,t); ys = step(Tset_s,t);
+figure('Name','Cascade - Setpoint','Color','w');
+plot(t,yc,'LineWidth',2); hold on; plot(t,ys,'--','LineWidth',1.8);
+yline(1,':k'); grid on; xlabel('Waktu (s)'); ylabel('Suhu reaktor y_1');
+title('Pelacakan setpoint: cascade vs single-loop');
+legend('Cascade','Single-loop','Location','best');
+ic = stepinfo(Tset_c); is = stepinfo(Tset_s);
+fprintf('-- Setpoint cascade -- overshoot=%.2f%%  settling=%.3fs\n', ic.Overshoot, ic.SettlingTime);
+fprintf('-- Setpoint single  -- overshoot=%.2f%%  settling=%.3fs\n', is.Overshoot, is.SettlingTime);
+
+%% 6. PENOLAKAN GANGGUAN PADA LOOP SEKUNDER (manfaat utama cascade) ----
+td = (0:0.01:50)';
+ydc = step(Tdist_c,td); yds = step(Tdist_s,td);
+figure('Name','Cascade - Disturbance','Color','w');
+plot(td,ydc,'LineWidth',2); hold on; plot(td,yds,'--','LineWidth',1.8);
+yline(0,':k'); grid on; xlabel('Waktu (s)'); ylabel('Penyimpangan suhu y_1');
+title('Penolakan gangguan sekunder (step d_2): cascade vs single-loop');
+legend('Cascade','Single-loop','Location','best');
+
+peak_c = max(abs(ydc));  IAE_c = trapz(td,abs(ydc));
+peak_s = max(abs(yds));  IAE_s = trapz(td,abs(yds));
+fprintf('\n-- Penolakan gangguan d2 --\n');
+fprintf('Puncak: cascade=%.4f  single=%.4f  (%.1fx lebih kecil)\n', peak_c, peak_s, peak_s/peak_c);
+fprintf('IAE   : cascade=%.4f  single=%.4f  (%.1fx lebih kecil)\n', IAE_c, IAE_s, IAE_s/IAE_c);
+
+%% 7. ANALISIS KESTABILAN ----------------------------------------------
+[Gmi,Pmi,~,Wpi] = margin(G2*Gc2);
+[Gmo,Pmo,~,Wpo] = margin(Lout);
+[Gms,Pms,~,Wps] = margin(Ls);
+fprintf('\n-- Margin kestabilan --\n');
+fprintf('Inner : PM=%.1f deg @ %.3f rad/s , GM=%.2f dB\n', Pmi, Wpi, 20*log10(Gmi));
+fprintf('Outer : PM=%.1f deg @ %.3f rad/s , GM=%.2f dB\n', Pmo, Wpo, 20*log10(Gmo));
+fprintf('Single: PM=%.1f deg @ %.3f rad/s , GM=%.2f dB\n', Pms, Wps, 20*log10(Gms));
+
+figure('Name','Cascade - Bode','Color','w');
+bode(G2*Gc2, Lout); grid on;
+title('Bode loop terbuka: inner (cepat) vs outer (lambat)');
+legend('Loop sekunder (inner)','Loop primer (outer)','Location','best');
+
+figure('Name','Cascade - Root Locus','Color','w');
+rlocus(Lout); grid on; axis([-7 1 -4 4]);
+title('Root locus loop primer (outer)');
+
+fprintf('\nSelesai. Periksa keenam figure yang dihasilkan.\n');
